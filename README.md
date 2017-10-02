@@ -11,3 +11,6 @@ for hikey platform
 	./build image    - signing the images , creating  key pair and system image
 	
 	./build flash    - flsah the images on Hikey 
+
+
+for more information refer UEFI_RDK.doc
