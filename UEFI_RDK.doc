@@ -1,0 +1,323 @@
+                                           UEFI RDK
+                                   Secure   Boot loader and DRI
+
+                                          Kalyan Kumar N
+                                     Kalyankumar.nagabhirava@linaro.org
+
+
+
+Introduction
+
+RDK software stack provides a common framework for developing STB software. RDK is based on the standard Linux operating system which is designed to meet the requirements of the latest generation media servers and clients.
+RDK support for the stack is currently offered by over 200 companies, including SoC vendors, system integrators and network operators.
+RDK is ported on many ARM based platforms, system developers still need to deploy a highly hardware-specific firmware image rather than a generic operating system image. 
+
+In order to reduce the complexity and interoperability between vendor bootloaders, the UEFI standard is used to take the place of the traditional operating system boot loader
+
+Comcast is looking into the standardization of the RDK box firmware boot process using UEFI.
+
+Using UEFI
+UEFI (Unified Extensible Firmware Interface) is the open, multi-vendor replacement for the aging BIOS standard, it describes an interface between the operating system (OS) and the platform firmware. UEFI allows the extension of platform firmware by loading UEFI driver and UEFI application (boot loader etc.)  Images.
+RDK bootloader is using some of UEFI features (secure boot, Http protocol etc.) for implementing generic Bootloader and DRI (disaster recovery Image) functionality for its UEFI supported STB’s.
+
+UEFI Secure Boot
+
+Secure boot is designed to protect a system against malicious code being loaded and executed early in the boot process, before the operating system has been loaded.  If an invalid binary is loaded while secure boot is enabled, the user is alerted, and the system will refuse to boot the tampered binary.
+
+The four main EFI variables used for secure boot. The Platform Key (often abbreviated to PK) offers full control of the secure boot key hierarchy. The holder of the PK can install a new PK and update the KEK (Key Exchange Key). This is a second key, which either can sign executable EFI binaries directly or be used to sign the db and dbx databases. The db (signature database) variable contains a list of allowed signing certificates or the cryptographic hashes of allowed binaries. The dbx is the inverse of db, and it is used as a blacklist of specific certificates or hashes, which otherwise would have been accepted, but which should not be able to run.
+
+Secure Boot Loader on Hikey platform
+UEFI RDK secure Bootloader is implemented on Hikey (arm64) Platform.
+HiKey is a 64-bit platform. The RDK will run in user space in Aarch32 execution mode and UEFI will support a boot sequence in Aarch64.
+The kernel and the firmware all execute in 64-bit mode. The RDK runs in 32-bit user space, which is separate and fully supported by the 64-bit kernel.
+The UEFI implementation will use Tianocore/EDK2 with FDT. The implementation will use ARM Trusted Firmware (TF) reference of secure world software for ARMv8-A, which includes a Secure Monitor executing at Exception Level 3 (EL3).
+  EDK2:
+EDK II is cross-platform firmware development environment for the UEFI and PI specifications. EDK II is open source, using a BSD license.
+  Code path:
+         https://github.com/tianocore/edk2.git
+EDK2 by default, does not support hikey board
+
+Openplatformpkg:
+Openplatformpkg is based on EDK2 and supports various development boards such as RPI, ARM juno etc. including HiKey.
+For supporting Secureboot and DRI, forked openplaformPkg and created “hikey-rdk” branch.
+ Code Path:
+    https://github.com/linaro-home/OpenPlatformPkg.git    -b hikey-rdk
+ OpenPlatformPkg provides following features for HiKey:
+USB host driver with support Ethernet Adapter
+SD/MMC driver support 
+UART console driver support etc
+
+RDKPkg:
+RDK pkg provides reference implementation of secure boot loader and DRI code for Hikey platform
+Code path:
+          https://github.com/linaro-home/RdkPkg.git
+
+Enable Secure Boot:
+RDK BootLoader is part of RDK Pkg,  Enables secure boot by registering PK and KEK Key.
+We will validate only Linux kernel in UEFI, so we set only KEK key for image authentication.PK and KEK pair will be generated using openssl utility, public key of key pair  Will be flashed in to Hikey flash partition using fast boot utility.
+
+The public key should not  be part of the image that it authenticates, on this  system, the public key that authenticates the Linux kernel  is part of reserved  partition  and public key which validates rootfs will be with Kennel image (Boot partition), this will maintain chain of trust.
+
+Key which validates Rootfs is placed in Boot partition and will registered to UEFI variable and exported to Linux kernel.
+
+Bootloader Installs the FDT blob into EFI system configuration table by reading the DTB file from Boot image and kernel loads the FDT from UEFI system configuration table.
+
+
+RDK DRI on Hikey platform
+RDK reference DRI firmware application is part of RDK Pkg , provides TFTP and HTTP download methods and download a PCI image file via Ethernet , then store the image into flash memory. 
+Platform Code Image (PCI) is comprised of below components:
+1 Linux Kernel
+2 Linux DTB file
+3 Root Filesystem
+When a firmware image is downloaded, all three components are included as a monolith image. Linux kernel and Rootfs are separately signed so that they can be stored into different physical locations in memory, and still be validated prior and during use.
+
+OpenPlatformPkg supports only tftp boot feature. Hence, HttpBoot feature need to be added manually by adding Http drivers of Network Pkg.
+Ex: NetworkPkg/HttpDxe/HttpDxe.inf
+RDK DRI application search for HTTP boot protocol and gets the handle of HTTP protocol for accessing HTTP utilities.
+
+DRI reads Remote (PCI) Image URL path from configure file placed in boot partition.
+Prototype of Configure file:
+ HTTP_SERVER_NAME="http://192.168.2.25"
+HTTP_FILE_NAME="PCI.img"
+echo "${HTTP_SERVER_NAME}/${HTTP_FILE_NAME}" > Server.url
+
+Once the device path is updated, DRI is now set ready for downloading the file.
+Download Image works in two stages:
+	a. Firstly, the size of boot file is queried using Load File protocol, setting file size and file buffer to null.
+	b. Once the file size is known, buffer for the file is allocated and load file protocol is now called using actual buffer and file size.
+
+HTTP boot driver expands the device path and handles all the complexities to fetch file from HTTP server, once the download complete, we will have the actual boot file filled in the buffer. This file can be stored to flash memory for later booting purpose.
+
+Kernel will be stored in boot partition and Rootfs will be stored in system partition.
+
+Build and testing Hikey UEFI Firmware 
+Script for Build and Flash UEFI Firmware image
+
+#!/bin/bash
+
+set -e
+
+HTTP_SERVER_NAME="http://192.168.2.25"
+HTTP_FILE_NAME="LHG.efi"
+
+BASE_DIR=${PWD}
+LLDR_DIR=${BASE_DIR}/l-loader
+EDK_DIR=${BASE_DIR}/edk2
+BBK_DIR=${BASE_DIR}/bitbake
+IMG_DIR=${BASE_DIR}/image
+RFS_FILE=${BBK_DIR}/build-rpb/tmp-rpb-glibc/deploy/images/hikey/core-image-minimal-hikey.tar.gz
+DTB_FILE=${BBK_DIR}/build-rpb/tmp-rpb-glibc/deploy/images/hikey/Image-hi6220-hikey.dtb
+IMAGE=${BBK_DIR}/build-rpb/tmp-rpb-glibc/deploy/images/hikey/Image
+
+BUILD_TYPE=RELEASE
+
+unset ARCH CROSS_COMPILE
+export PATH=${BASE_DIR}/tc32/bin:${BASE_DIR}/tc64/bin:$PATH
+
+function fetch() {
+	if [ ! -d $4 ]; then
+		if [ $1 == "wget" ]; then 
+			mkdir -p $4
+			$1 $2 -O $3
+			tar -axvf $3 -C $4 --strip-components=1
+		elif [ $1 == "git" ]; then
+			$1 clone $2 -b $3 $4
+		fi
+	fi
+}
+
+function build_edk2() {
+	#git clone files
+	fetch git https://github.com/96boards-hikey/arm-trusted-firmware.git hikey arm-trusted-firmware
+	fetch git https://git.linaro.org/uefi/uefi-tools.git master uefi-tools
+	fetch git https://github.com/tianocore/edk2.git master edk2
+	fetch git https://github.com/linaro-home/RdkPkg.git master edk2/RdkPkg
+	fetch git https://github.com/linaro-home/OpenPlatformPkg.git hikey-rdk edk2/OpenPlatformPkg
+	fetch git https://git.linaro.org/uefi/LinaroPkg.git master LinaroPkg
+	fetch git https://github.com/96boards/l-loader.git master l-loader
+	
+	#wget files
+	fetch wget http://releases.linaro.org/archive/15.02/components/toolchain/binaries/arm-linux-gnueabihf/gcc-linaro-4.9-2015.02-3-x86_64_arm-linux-gnueabihf.tar.xz tc32/gcc-linaro-4.9-2015.02-3-x86_64_arm-linux-gnueabihf.tar.xz tc32
+	fetch wget http://releases.linaro.org/archive/15.02/components/toolchain/binaries/aarch64-linux-gnu/gcc-linaro-4.9-2015.02-3-x86_64_aarch64-linux-gnu.tar.xz tc64/64gcc-linaro-4.9-2015.02-3-x86_64_aarch64-linux-gnu.tar.xz tc64
+	fetch wget https://ftp.openssl.org/source/old/1.0.2/openssl-1.0.2j.tar.gz edk2/CryptoPkg/Library/OpensslLib/openssl-1.0.2j.tar.gz edk2/CryptoPkg/Library/OpensslLib/openssl-1.0.2j
+
+	#build edk2
+	cd ${EDK_DIR}
+	git reset --hard 465663e9f128428323e6c6e4431dd15ac287a24c
+	cd CryptoPkg/Library/OpensslLib/openssl-1.0.2j
+	if patch -p1 --dry-run < ../EDKII_openssl-1.0.2j.patch > /dev/null 2>&1; then
+		echo '#################### applying patch ###########'
+		patch -p1 < ../EDKII_openssl-1.0.2j.patch
+		cd .. 
+		./Install.sh
+	fi
+	cd ${EDK_DIR}
+	${BASE_DIR}/uefi-tools/uefi-build.sh -c ../LinaroPkg/platforms.config -b ${BUILD_TYPE} -a ../arm-trusted-firmware hikey
+}
+
+function prepare_image() {
+	#create l-loader.bin
+	if [ ! -f ${EDK_DIR}/Build/HiKey/${BUILD_TYPE}_GCC49/FV/bl1.bin ]; then
+		echo '!!! Build edk2 before generating images'
+		exit
+	fi
+	cd ${LLDR_DIR}
+	make BL1=${EDK_DIR}/Build/HiKey/${BUILD_TYPE}_GCC49/FV/bl1.bin l-loader.bin
+
+	#create signed kernel image
+	sbsign --key KEK.key --cert KEK.crt --output ImageSigned ${IMAGE}
+
+	#create keys
+	cd ${BASE_DIR}
+	mkdir -p image
+	cd ${BASE_DIR}/image
+	openssl req -new -x509 -newkey rsa:2048 -subj "/CN=my PK /" -keyout PK.key -out PK.crt -days 3650 -nodes -sha256 
+	openssl req -new -x509 -newkey rsa:2048 -subj "/CN=my KEK /" -keyout KEK.key -out KEK.crt -days 3650 -nodes -sha256
+	openssl x509 -in PK.crt -out PK.cer -outform DER
+	openssl x509 -in KEK.crt -out KEK.cer -outform DER
+
+	#create nvme.img
+	dd if=/dev/zero of=nvme.img bs=1K count=123
+
+	#create reserved.img
+	dd if=/dev/zero of=reserved.img bs=1K count=128
+	printf "%016d" `stat -c "%s" "PK.cer"` >  tmp
+	cat PK.cer >> tmp
+	printf "%016d" `stat -c "%s" "KEK.cer"` >> tmp
+	cat KEK.cer >> tmp
+	dd if=tmp of=reserved.img conv=notrunc
+
+	#create rootfs image
+	if [ ! -f rootfs.ext3 ]; then
+		dd if=/dev/zero of=rootfs.ext3 bs=1M count=512
+		mkfs.ext3 rootfs.ext3
+	fi
+	mkdir -p mnt
+	sudo mount -t ext3 rootfs.ext3 mnt
+	cp ${RFS_FILE} .
+	openssl dgst -sha256 -sign KEK.key -out rootfs.sha256 ${RFS_FILE}
+	sudo cp roots.sha256 ${RFS_FILE} mnt
+	sudo umount mnt
+	ext2simg rootfs.ext3 system.img
+
+	#create bundled image
+	printf "%016d" `stat -c "%s" "system.img"` >  tmp
+	cat system.img >> tmp
+	printf "%016d" `stat -c "%s" "ImageSigned"` >>  tmp
+	cat ImageSigned >> tmp
+	printf "%016d" `stat -c "%s" "${DTB_FILE}"` >> tmp
+	cat ${DTB_FILE} >> tmp
+	sync
+	mv tmp ${HTTP_FILE_NAME}
+
+	#create Server.url
+	if [ -f boot-fat.uefi.img ]; then
+		fetch wget https://builds.96boards.org/releases/hikey/linaro/debian/latest/boot-fat.uefi.img.gz boot-fat.uefi.img.gz
+		gunzip boot-fat.uefi.img.gz
+	fi
+	sudo mount -o loop,rw,sync boot-fat.uefi.img mnt
+	echo "${HTTP_SERVER_NAME}/${HTTP_FILE_NAME}" > Server.url
+	sudo cp KEK.crt mnt/EFI/BOOT
+	sudo cp Server.url mnt/EFI/BOOT
+	sudo cp ${DTB_FILE} mnt/EFI/BOOT
+	sudo cp ImageSigned mnt/EFI/BOOT/Image
+	sync
+	sudo umount mnt
+}
+
+function flash_image() {
+	cd ${LLDR_DIR}
+	sudo python hisi-idt.py --img1=l-loader.bin
+	sleep 3
+	sudo fastboot flash fastboot ${EDK_DIR}/Build/HiKey/${BUILD_TYPE}_GCC49/FV/fip.bin
+	sleep 1
+	cd ${IMG_DIR}
+	sudo fastboot flash nvme nvme.img
+	sleep 1
+	sudo fastboot flash reserved reserved.img
+	sleep 1
+	sudo fastboot flash system system.img
+}
+
+function build_kernel() {
+        #build kernel and initramfs
+        mkdir -p bitbake
+        cd bitbake
+
+        if [ ! -d bin ]; then
+                mkdir bin
+                PATH=${PWD}/bin:$PATH
+                curl http://commondatastorage.googleapis.com/git-repo-downloads/repo > bin/repo
+                chmod a+x bin/repo
+        fi
+
+        if [ ! -d bitbake ]; then
+                repo init -u https://github.com/96boards/oe-rpb-manifest.git -b morty
+                repo sync
+                fetch git https://github.com/linaro-home/meta-lhg.git master layers/meta-lhg
+                sed -i -e '24,28s/.*/#&/' layers/meta-96boards/conf/machine/hikey.conf
+                sed -i -e '49s/.*/#&/' layers/meta-96boards/conf/machine/hikey.conf
+                sed -i -e 's/^COMPATIBLE_HOST/#COMPATIBLE_HOST/' layers/openembedded-core/meta/recipes-core/initrdscripts/initramfs-live-install_1.0.bb
+                sed -i -e 's/^COMPATIBLE_HOST/#COMPATIBLE_HOST/' layers/openembedded-core/meta/recipes-core/initrdscripts/initramfs-live-install-efi_1.0.bb
+                echo 'COMPATIBLE_HOST = "aarch64-linaro-linux"' >> layers/openembedded-core/meta/recipes-core/initrdscripts/initramfs-live-install_1.0.bb
+                echo 'COMPATIBLE_HOST = "aarch64-linaro-linux"' >> layers/openembedded-core/meta/recipes-core/initrdscripts/initramfs-live-install-efi_1.0.bb
+        fi
+
+        export MACHINE=hikey DISTRO=rpb
+        source setup-environment
+        bitbake-layers add-layer ../layers/meta-lhg/meta-lhg
+        bitbake initramfs-secure-boot
+        bitbake core-image-minimal
+}
+
+case "$1" in
+	"kernel")
+		echo 'Building Kernel & RootFS'; sleep 1
+		build_kernel
+		;;
+
+	"edk2")
+		echo 'Building EDK2'; sleep 1
+		build_edk2
+		;;
+
+	"image")
+		echo 'Creating images'; sleep 1
+		prepare_image
+		;;
+
+	"flash")
+		echo 'Flashing images'; sleep 1
+		flash_image
+		;;
+
+	*)
+		echo '!!! unknown argument !!!'
+		echo 'usage:'
+		echo '	./build kernel'
+		echo '	./build edk2'
+		echo '	./build image'
+		echo '	./build flash'
+		exit
+		;;
+esac
+
+
+
+
+
+
+What next?
+
+UEFI RDK Secure boot loader and DRI can be used as a reference implementation for firmware development of RDK Boxes. 
+
+Firmware provided by the OEM and SoC vendor can refer provided solution to make standard RDK boot process for ensuring successful integration with the RDK software stack.
+
+
+
+
+
+Reference:
+ http://www.linuxjournal.com/content/take-control-your-pc-uefi-secure-boot
+https://github.com/96boards/documentation/wiki/HiKeyUEFI
+
