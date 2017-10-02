@@ -3,6 +3,7 @@ This repository holds reference implementation of UEFI based RDK secure boot loa
 
 for hikey platform
  usage:
+ 
 	./build rootfs   - yocto build for kernel , initramfs and rootfs
 	
 	./build edk2     - UEFI firmware and RDK bootlaoder and DRI
